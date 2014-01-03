@@ -651,7 +651,35 @@ class RedisTrib
             keys = source.r.cluster("getkeysinslot",slot,10)
             break if keys.length == 0
             keys.each{|key|
-                source.r.migrate(target.info[:host],target.info[:port],key,0,1000)
+		    retries = 1
+		    begin
+			    source.r.migrate(target.info[:host],target.info[:port],key,0,1000)
+		    rescue Redis::CommandError => e
+			    if retries > 0 && (e.message == "ERR Target instance replied with error: ERR Target key name is busy.")
+				type_key_a = nil
+				type_key_b = nil
+				begin
+					type_key_a = source.r.type(key)
+				rescue Redis::CommandError => e
+				end
+				begin
+					type_key_b = target.r.type(key)
+				rescue Redis::CommandError => e
+				end
+				# it appears as though we cant migrate it because
+				# the target thinks its busy
+				# but the source still has it, so nuke it, and
+				# remove it
+				if type_key_a != nil && type_key_b.nil?
+				        retries -= 1
+					target.r.asking
+					target.r.del(key)
+					retry
+				end
+			    else
+				    raise e
+			    end
+		  end
                 print "." if o[:verbose]
                 STDOUT.flush
             }
